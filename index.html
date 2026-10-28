@@ -121,7 +121,7 @@
       </div>
       <p id="name-err" style="color:#b23; font-size:13px; min-height:16px; margin:10px 0 0;"></p>
     </div>
-    <button class="primary" onclick="submitName()">Continue &rarr;</button>
+    <button class="primary" id="continue" onclick="submitName()">Continue &rarr;</button>
   </div>
 </div>
 
@@ -309,37 +309,79 @@ function goPage(n) {
 }
 
 // --- Rater identity & block assignment -------------------------------------
-// The block comes from the link (?block=N), so the researcher controls coverage by
-// who gets which link; the name only identifies the rater.
-const NO_BLOCK_MSG = "This link is missing its group number. Please open the exact link "
-  + "you were sent, or email pkaushik@fbk.eu for a new one.";
+// One public link. A new rater goes to the block with the fewest raters so far, as
+// counted by the sheet (ties broken at random); if the sheet can't be reached, a hash
+// of the name picks the block. A rater keeps their block on return visits in this
+// browser. ?block=N forces a block (researcher top-up of a short block).
 function normName(f, l) { return (f + " " + l).trim().toLowerCase().replace(/\s+/g, " "); }
+function hashName(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; }
 function overrideBlock() {
   const n = parseInt(new URLSearchParams(location.search).get("block"), 10);
   return (n >= 1 && n <= N_BLOCKS) ? n - 1 : null;
 }
+async function fetchCounts() {
+  if (!SUBMIT_URL) return null;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const r = await fetch(SUBMIT_URL + "?counts=1", { signal: ctl.signal });
+    const j = await r.json();
+    return (j && j.counts) ? j.counts : null;
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+// -> [block index, how it was chosen]
+async function pickBlock(nn) {
+  const counts = await fetchCounts();
+  if (!counts) return [hashName(nn) % N_BLOCKS, "name_hash"];
+  let min = Infinity, best = [];
+  for (let b = 0; b < N_BLOCKS; b++) {
+    const c = +(counts[b + 1] || 0);
+    if (c < min) { min = c; best = [b]; } else if (c === min) best.push(b);
+  }
+  return [best[Math.floor(Math.random() * best.length)], "fewest_raters"];
+}
+// Log the assignment so raters mid-way through count toward their block.
+function sendStart(rec, how) {
+  if (!SUBMIT_URL || TEST) return;
+  fetch(SUBMIT_URL, { method: "POST", mode: "no-cors", body: JSON.stringify({ start:
+    [new Date().toISOString(), rec.first, rec.last, rec.id, rec.block + 1, TEST, how] }) })
+    .catch(() => {});
+}
 function loadRaters() { try { return JSON.parse(localStorage.getItem(RATERS_KEY) || "{}"); } catch (e) { return {}; } }
 function newId() { try { return crypto.randomUUID(); } catch (e) { return "r" + Math.random().toString(36).slice(2, 12); } }
 
-function submitName() {
+async function submitName() {
   const first = document.getElementById("in-first").value.trim();
   const last = document.getElementById("in-last").value.trim();
   if (!first || !last) {
     document.getElementById("name-err").textContent = "Please enter both your first and last name.";
     return;
   }
+  const btn = document.getElementById("continue");
+  if (btn.disabled) return;                     // already assigning
   const forced = overrideBlock();
-  if (forced === null && !TEST) {               // test mode browses every trial anyway
-    document.getElementById("name-err").textContent = NO_BLOCK_MSG;
-    return;
-  }
   const nn = normName(first, last);
   const reg = loadRaters();
   let rec = reg[nn];
   if (!rec) {
-    rec = { first: first, last: last, id: newId(), block: (forced !== null ? forced : 0) };
+    rec = { first: first, last: last, id: newId(), block: 0 };
+    let how = "test";                           // test mode browses every trial anyway
+    if (forced !== null) {
+      rec.block = forced; how = "link";
+    } else if (!TEST) {
+      btn.disabled = true;
+      btn.textContent = "Assigning you a group\u2026";
+      [rec.block, how] = await pickBlock(nn);
+      btn.disabled = false;
+      btn.innerHTML = "Continue &rarr;";
+    }
+    sendStart(rec, how);
   } else if (forced !== null) {
-    rec.block = forced;                 // the link wins on return visits too
+    rec.block = forced;                 // a directed top-up wins on return visits too
   }
   reg[nn] = rec;
   localStorage.setItem(RATERS_KEY, JSON.stringify(reg));
@@ -637,8 +679,6 @@ function initPlayback() {
 
 window.addEventListener("DOMContentLoaded", () => {
   const f = document.getElementById("in-first"), l = document.getElementById("in-last");
-  if (overrideBlock() === null && !TEST)       // say so up front, before they type a name
-    document.getElementById("name-err").textContent = NO_BLOCK_MSG;
   f.focus();
   f.addEventListener("keydown", e => { if (e.key === "Enter") l.focus(); });
   l.addEventListener("keydown", e => { if (e.key === "Enter") submitName(); });
