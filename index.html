@@ -253,9 +253,13 @@ const DATA = {"gemini": {"2": {"src": "rolefree_p1strict_gemini_full3_gemini-2.5
 const FAM_LABEL = {"gemini": "Gemini 2.5 Pro"};
 const BLOCKS = [[["gemini", "3"], ["gemini", "9"], ["gemini", "11"]], [["gemini", "12"], ["gemini", "24"], ["gemini", "29"]], [["gemini", "2"], ["gemini", "7"], ["gemini", "13"]], [["gemini", "17"], ["gemini", "26"], ["gemini", "27"]], [["gemini", "6"], ["gemini", "23"], ["gemini", "28"]]];
 const N_BLOCKS = 5;
-// ?test=1 -> a dry run: separate storage, CSV flagged is_test + TEST_ filename,
-// so a test pass can never be mistaken for real data.
-const TEST = new URLSearchParams(location.search).get("test") === "1";
+// Dry runs: separate storage, rows/CSV flagged is_test, no start row, so a test pass
+// never counts toward a block or mixes with real data.
+//   ?test=1    exactly what a participant sees: a block by the same rule, its 3 trials
+//   ?test=all  every trial in the pool, for checking the transcripts
+const TEST_PARAM = new URLSearchParams(location.search).get("test");
+const TEST_ALL = TEST_PARAM === "all";
+const TEST = TEST_PARAM === "1" || TEST_ALL;
 const RATERS_KEY = TEST ? "dcu_test_raters" : "dcu_raters";
 const SUBMIT_URL = "https://script.google.com/macros/s/AKfycbzimCtlkhNESidVqoYvPAWIlciI2K58nTmBou2_98Tn9lt4wx_IeWxqGdpNwx8lDCBV/exec";   // Apps Script endpoint; "" -> download-only
 
@@ -373,10 +377,10 @@ async function submitName() {
   let rec = reg[nn];
   if (!rec) {
     rec = { first: first, last: last, id: newId(), block: 0 };
-    let how = "test";                           // test mode browses every trial anyway
+    let how = "test";                           // ?test=all browses every trial anyway
     if (forced !== null) {
       rec.block = forced; how = "link";
-    } else if (!TEST) {
+    } else if (!TEST_ALL) {
       btn.disabled = true;
       btn.textContent = "Assigning you a group\u2026";
       [rec.block, how] = await pickBlock(nn);
@@ -394,7 +398,7 @@ async function submitName() {
   const badge = document.getElementById("pidbadge");
   badge.textContent = (TEST ? "TEST MODE \u00b7 " : "")
     + rater.first + " " + rater.last + " \u00b7 block " + (rater.block + 1)
-    + (TEST ? " \u00b7 all trials" : "");
+    + (TEST_ALL ? " \u00b7 all trials" : "");
   if (TEST) { badge.style.background = "#fdecec"; badge.style.borderColor = "#e0a3a3"; badge.style.color = "#a33"; }
   badge.style.display = "block";
   initPlayback();
@@ -428,10 +432,10 @@ function fillSelect(sel, options, labeler) {
     sel.appendChild(o);
   });
 }
-// [[fam, trial], ...] for this rater. In TEST mode the whole pool is browsable
-// (researcher QA across trials); real raters only ever see their own block.
+// [[fam, trial], ...] for this rater. With ?test=all the whole pool is browsable
+// (researcher QA across trials); everyone else only ever sees their own block.
 function blockPairs() {
-  if (TEST) {
+  if (TEST_ALL) {
     const all = [];
     BLOCKS.forEach(b => b.forEach(p => all.push(p)));
     all.sort((a, b) => a[0] === b[0] ? (+a[1] - +b[1]) : (a[0] < b[0] ? -1 : 1));
